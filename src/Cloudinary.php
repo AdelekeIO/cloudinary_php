@@ -148,15 +148,15 @@ class Cloudinary
 
     public static function build_array($value)
     {
+        if (is_null($value)) {
+            return array();
+        }
+
         if (is_array($value) && !Cloudinary::is_assoc($value)) {
             return $value;
-        } else {
-            if ($value === null) {
-                return array();
-            } else {
-                return array($value);
-            }
         }
+
+        return array($value);
     }
 
 
@@ -423,6 +423,22 @@ class Cloudinary
         }
 
         return $array != array_values($array);
+    }
+
+    /** @internal Prepends associative element to the beginning of an array
+     *
+     * @param array $arr The input array.
+     * @param mixed $key The prepended key
+     * @param mixed $val The prepended value
+     *
+     * @return array The resulting array
+     */
+    public static function array_unshift_assoc(&$arr, $key, $val)
+    {
+        $arr = array_reverse($arr, true);
+        $arr[$key] = $val;
+        $arr = array_reverse($arr, true);
+        return $arr;
     }
 
     private static function generate_base_transformation($base_transformation)
@@ -1473,10 +1489,10 @@ class Cloudinary
      * Retrieves responsive breakpoints json
      *
      * When passing special string to transformation `width` parameter of form `auto:breakpoints{parameters}:json`,
-     * the response contains JSON with data of the responsive breakpoints and not the image itself, as one might expect.
+     * the response contains JSON with data of the responsive breakpoints and not the image itself.
      *
      * @param string    $public_id      The public ID of the image
-     * @param array     $srcset_data    data needed for generating responsive breakpints
+     * @param array     $srcset_data    Data needed for generating responsive breakpoints
      * @param array     $options        Cloudinary url options
      *
      * @return array    Resulting breakpoints
@@ -1490,10 +1506,10 @@ class Cloudinary
         $bytes_step = \Cloudinary::option_get($srcset_data, 'bytes_step', self::RESPONSIVE_BP_BYTES_STEP);
         $max_images = \Cloudinary::option_get($srcset_data, 'max_images', self::RESPONSIVE_BP_MAX_IMAGES);
 
-        $kbytes_step = ceil($bytes_step / 1024);
+        $kbytes_step = (int)ceil($bytes_step / 1024);
 
         $breakpoints_width_param = "auto:breakpoints_${min_width}_${max_width}_${kbytes_step}_${max_images}:json";
-        // We reuse generate_single_srcset_url function, passing special `width` parameter
+        // We use generate_single_srcset_url function, passing special `width` parameter
         $breakpoints_url = generate_single_srcset_url($public_id, $breakpoints_width_param, $srcset_data, $options);
 
         $client = new HttpClient();

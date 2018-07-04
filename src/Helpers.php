@@ -96,6 +96,28 @@ namespace {
         return $form;
     }
 
+    /**
+     * @internal Helper function, allows chaining transformations to the end of transformations list
+     *
+     * The result of this function is an updated $options parameter
+     *
+     * @param array $options Original options
+     * @param array $transformations Transformations to chain at the end
+     */
+    function chain_transformations(&$options, $transformations)
+    {
+        $raw_transformation = Cloudinary::generate_transformation_string($options);
+        $tr = ["transformation" => $transformations];
+        $chained_transformations = Cloudinary::generate_transformation_string($tr);
+        $options["raw_transformation"] = $raw_transformation . "/" . $chained_transformations;
+
+        // We might still have width and height params left if they were provided.
+        // We don't want to use them for the second time
+        $unwanted_params = array('width', 'height');
+        foreach ($unwanted_params as $key) {
+            unset($options[$key]);
+        }
+    }
 
     /**
      * @internal Helper function. Validates src_data parameters
@@ -165,7 +187,7 @@ namespace {
             $min_width = $max_width;
         }
 
-        $step_size = ceil(($max_width - $min_width) / ($max_images > 1 ? $max_images - 1 : 1));
+        $step_size = (int)ceil(($max_width - $min_width) / ($max_images > 1 ? $max_images - 1 : 1));
 
         $curr_breakpoint = $min_width;
 
@@ -234,27 +256,33 @@ namespace {
     function generate_single_srcset_url($public_id, $width, $srcset_data, $options)
     {
         $curr_options = Cloudinary::array_copy($options);
+
         /*
-        The following line is used for the next purposes:
-          1. Generate raw transformation string
-          2. Cleanup transformation parameters from $curr_options.
-        We call it intentionally even when the user provided custom transformation in srcset
+        The code below is a part of `cloudinary_url` code that affects $options.
+        We call it here, to make sure we get exactly the same behavior.
+
+        TODO: Refactor this code, unify it with `cloudinary_url` or fix `cloudinary_url` and remove it
         */
-        $raw_transformation = Cloudinary::generate_transformation_string($curr_options);
+        Cloudinary::check_cloudinary_field($public_id, $curr_options);
+        $type = Cloudinary::option_get($curr_options, "type", "upload");
+
+        if ($type == "fetch" && !isset($curr_options["fetch_format"])) {
+            $curr_options["fetch_format"] = Cloudinary::option_consume($curr_options, "format");
+        }
+        //END OF TODO
+
+        $transformations = [];
 
         if (!empty($srcset_data["transformation"])) {
-            $curr_options["transformation"] = $srcset_data["transformation"];
-            $raw_transformation = Cloudinary::generate_transformation_string($curr_options);
+            // We need to "wipe out" the main transformation, and use the one provided by user
+            Cloudinary::generate_transformation_string($curr_options);
+
+            array_push($transformations, $srcset_data['transformation']);
         }
 
-        $curr_options["raw_transformation"] = $raw_transformation . "/c_scale,w_{$width}";
+        array_push($transformations, ["crop" => "scale", "width" => $width]);
 
-        // We might still have width and height params left if they were provided.
-        // We don't want to use them for the second time
-        $unwanted_params = array('width', 'height');
-        foreach ($unwanted_params as $key) {
-            unset($curr_options[$key]);
-        }
+        chain_transformations($curr_options, $transformations);
 
         return cloudinary_url_internal($public_id, $curr_options);
     }
@@ -294,17 +322,6 @@ namespace {
 
         // TODO: Find a better way to pass breakpoints to `sizes` attribute
         $srcset_data["breakpoints"] = $breakpoints;
-
-        // The code below is a part of `cloudinary_url` code that affects $options.
-        // We call it here, to make sure we get exactly the same behavior.
-        // TODO: Refactor this code, unify it with `cloudinary_url` or fix `cloudinary_url` and remove it
-        Cloudinary::check_cloudinary_field($public_id, $options);
-        $type = Cloudinary::option_get($options, "type", "upload");
-
-        if ($type == "fetch" && !isset($options["fetch_format"])) {
-            $options["fetch_format"] = Cloudinary::option_consume($options, "format");
-        }
-        //END OF TODO
 
         $items = array();
         foreach ($breakpoints as $breakpoint) {
@@ -652,5 +669,111 @@ namespace {
         $html .= '</video>';
 
         return $html;
+    }
+
+    /**
+     * @internal Generates `media` attribute of the `source` tag
+     *
+     * @param array $media_options Currently only supported `min_width` and `max_width`
+     *
+     * @return string Resulting `media` attribute
+     */
+    function generate_media_attr($media_options)
+    {
+        $media_query_conditions = [];
+
+        if (!empty($media_options['min_width'])) {
+            array_push($media_query_conditions, "(min-width: ${media_options['min_width']}px)");
+        }
+
+        if (!empty($media_options['max_width'])) {
+            array_push($media_query_conditions, "(max-width: ${media_options['max_width']}px)");
+        }
+
+        return implode(' and ', $media_query_conditions);
+    }
+
+    /**
+     * @api Generates HTML `source` tag that can be used by `picture` tag
+     *
+     * @param $public_id
+     * @param $options
+     *
+     * @return string
+     */
+    function cl_source_tag($public_id, $options = [])
+    {
+        $srcset_data = array_merge(
+            Cloudinary::config_get("srcset", []),
+            Cloudinary::option_consume($options, 'srcset', [])
+        );
+
+        $attributes = Cloudinary::option_get($options, 'attributes', []);
+
+        if (!empty($srcset_data)) {
+            if (!array_key_exists("srcset", $attributes)) {
+                $options_copy =  Cloudinary::array_copy($options);
+                $srcset_attr = generate_image_srcset_attribute($public_id, $srcset_data, $options_copy);
+                if (!is_null($srcset_attr)) {
+                    $attributes["srcset"] = $srcset_attr;
+                }
+            }
+
+            if (!empty($srcset_data["sizes"])
+                && $srcset_data["sizes"] === true
+                && !array_key_exists("sizes", $attributes)) {
+                $sizes_attr = generate_image_sizes_attribute($srcset_data);
+                if (!is_null($sizes_attr)) {
+                    $attributes["sizes"] = $sizes_attr;
+                }
+            }
+        }
+
+        // `source` tag under `picture` tag uses `srcset` attribute for both `srcset` and `src` urls
+        if (!array_key_exists("srcset", $attributes)) {
+            $attributes["srcset"] = cloudinary_url_internal($public_id, $options);
+        }
+
+        if (empty($attributes['media'])) {
+            $media_attr = generate_media_attr(Cloudinary::option_get($options, "media"));
+            if (!empty($media_attr)) {
+                $attributes['media'] = $media_attr;
+            }
+        }
+
+        return '<source ' . Cloudinary::html_attrs($attributes) . '>';
+    }
+
+    /**
+     * @api Generates HTML `picture` tag
+     *
+     * @param string $public_id Public ID of the source image
+     * @param array  $options   Common options for all sources and `img` tag
+     * @param array  $sources   Definitions of each source which contains min_width, max_width and transformation
+     *
+     * @return string
+     */
+    function cl_picture_tag($public_id, $options = [], $sources = [])
+    {
+        $tag = '<picture>';
+
+        foreach ($sources as $source) {
+            $curr_public_id = $public_id;
+            $curr_options =  Cloudinary::array_copy($options);
+
+            $curr_options["media"] = \Cloudinary::array_subset($source, ['min_width', 'max_width']);
+
+            if (!empty($source["transformation"])) {
+                chain_transformations($curr_options, $source["transformation"]);
+            }
+
+            $tag .= cl_source_tag($curr_public_id, $curr_options);
+        }
+
+        $tag .= cl_image_tag($public_id, $options);
+
+        $tag .= '</picture>';
+
+        return $tag;
     }
 }
